@@ -1,0 +1,48 @@
+#!/bin/sh
+# Deploy hook for the bare repo at ~/xfetch.git on rainer.
+# On push it checks the work tree out to ~/src/xfetch, syncs the venv, and
+# restarts the user service (if installed).
+#
+# Install on rainer:
+#   cp deploy/post-receive ~/xfetch.git/hooks/post-receive   # (after first checkout)
+#   chmod +x ~/xfetch.git/hooks/post-receive
+set -e
+
+# A push is a non-interactive SSH session; `systemctl --user` needs these to
+# reach the user manager's bus.
+export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+
+WORK_TREE="$HOME/src/xfetch"
+GIT_DIR_BARE="$HOME/xfetch.git"
+BRANCH="main"
+
+mkdir -p "$WORK_TREE"
+git --work-tree="$WORK_TREE" --git-dir="$GIT_DIR_BARE" checkout -f "$BRANCH"
+
+cd "$WORK_TREE"
+
+# Create/refresh the virtualenv and dependencies (incl. pytest via [dev]).
+if [ ! -d .venv ]; then
+    python3 -m venv .venv
+fi
+./.venv/bin/pip install --quiet --upgrade pip
+./.venv/bin/pip install --quiet -r requirements-dev.txt
+
+# Gate the deploy on the test suite: a red push leaves the running service on
+# the previous (working) code instead of restarting into something broken.
+echo "post-receive: running tests…"
+if ! ./.venv/bin/python -m pytest; then
+    echo "post-receive: TESTS FAILED — not restarting; service stays on previous code." >&2
+    exit 1
+fi
+
+# Restart the service if it's already installed; ignore if not yet enabled.
+if systemctl --user list-unit-files xfetch.service >/dev/null 2>&1; then
+    systemctl --user restart xfetch.service || true
+    echo "post-receive: redeployed and restarted xfetch.service"
+else
+    echo "post-receive: checked out + venv ready; enable the service with:"
+    echo "  mkdir -p ~/.config/systemd/user"
+    echo "  cp ~/src/xfetch/deploy/xfetch.user.service ~/.config/systemd/user/xfetch.service"
+    echo "  systemctl --user daemon-reload && systemctl --user enable --now xfetch"
+fi

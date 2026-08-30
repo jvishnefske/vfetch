@@ -1,0 +1,49 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "xfetch"
+version = "0.1.0"
+description = "yt-dlp powered web video player (FastAPI + hls.js) with an FTS5 recommender"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "John Vishnefske", email = "jvishnefske@gmail.com" }]
+dependencies = [
+    "fastapi>=0.110",
+    # Starlette 1.0 removed the legacy TemplateResponse(name, context) signature
+    # in favour of request-first (request, name, context). Pin the floor so dev
+    # matches prod and the index-render regression test exercises the same API.
+    "starlette>=1.0",
+    "uvicorn[standard]>=0.29",
+    "yt-dlp>=2024.1.0",
+    # httpx2 is the maintained successor; Starlette 1.0's TestClient prefers it
+    # (`import httpx2 as httpx`) and the legacy `httpx` path is deprecated.
+    "httpx2>=2.4",
+    "jinja2>=3.1",
+    "beautifulsoup4>=4.12",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+
+[project.scripts]
+# `xfetch` launches uvicorn honouring $XFETCH_HOST / $XFETCH_PORT.
+xfetch = "app.cli:main"
+
+[tool.hatch.build.targets.wheel]
+# Distribution name is "xfetch" but the import package is "app"; say so, and
+# its templates ride along since they live inside the package dir.
+packages = ["app"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+filterwarnings = [
+    # Belt-and-braces: silence any residual deprecation chatter routed through
+    # starlette/fastapi (the httpx2 TestClient nag is resolved by depending on
+    # httpx2 directly, but other transitive deprecations may surface).
+    "ignore::DeprecationWarning:starlette.*",
+    "ignore::DeprecationWarning:fastapi.*",
+]

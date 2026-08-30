@@ -1,0 +1,48 @@
+# User-level systemd unit — runs xfetch as *you*, no root.
+#
+# Install:
+#   mkdir -p ~/.config/systemd/user
+#   cp deploy/xfetch.user.service ~/.config/systemd/user/xfetch.service
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now xfetch
+#   systemctl --user status xfetch
+#   journalctl --user -u xfetch -f      # logs
+#
+# Keep it running after you log out (optional):
+#   sudo loginctl enable-linger "$USER"
+#
+# Assumes the repo is at ~/src/xfetch with a venv created via:
+#   python3 -m venv ~/src/xfetch/.venv
+#   ~/src/xfetch/.venv/bin/pip install -r ~/src/xfetch/requirements.txt
+# Adjust the %h/src/xfetch paths below if yours differs.
+#
+# yt-dlp needs Deno or Node on PATH; user services inherit a minimal PATH, so
+# the line below covers the common locations (incl. Homebrew on Linux).
+
+[Unit]
+Description=xfetch - yt-dlp powered web video player (user service)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=exec
+WorkingDirectory=%h/src/xfetch
+
+# Binds all interfaces by default (reachable on the LAN). /api/proxy is an open
+# relay — set XFETCH_HOST=127.0.0.1 or add auth before exposing publicly.
+Environment=XFETCH_HOST=0.0.0.0
+Environment=XFETCH_PORT=8000
+# %S = user state dir (~/.local/state); StateDirectory creates xfetch under it.
+Environment=XFETCH_DB=%S/xfetch/xfetch.db
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin:/home/linuxbrew/.linuxbrew/bin
+StateDirectory=xfetch
+
+ExecStart=%h/src/xfetch/.venv/bin/uvicorn app.main:app \
+    --host ${XFETCH_HOST} --port ${XFETCH_PORT} --proxy-headers
+
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=true
+
+[Install]
+WantedBy=default.target

@@ -1,0 +1,72 @@
+# Plain (non-Nix) systemd unit for a pip/venv install.
+#
+# Install:
+#   sudo useradd --system --home /opt/xfetch --shell /usr/sbin/nologin xfetch
+#   sudo mkdir -p /opt/xfetch && sudo cp -r app requirements.txt /opt/xfetch/
+#   sudo python3 -m venv /opt/xfetch/.venv
+#   sudo /opt/xfetch/.venv/bin/pip install -r /opt/xfetch/requirements.txt
+#   sudo cp deploy/xfetch.service /etc/systemd/system/
+#   sudo cp deploy/xfetch.env.example /etc/xfetch.env   # then edit
+#   sudo chown -R xfetch:xfetch /opt/xfetch
+#   sudo systemctl daemon-reload && sudo systemctl enable --now xfetch
+#
+# NOTE: yt-dlp needs a JavaScript runtime (Deno preferred, Node works) on PATH
+# to solve YouTube-style signature challenges. Install one system-wide; the
+# hardened PATH below covers the usual locations.
+
+[Unit]
+Description=xfetch - yt-dlp powered web video player
+Documentation=https://github.com/yt-dlp/yt-dlp
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=exec
+User=xfetch
+Group=xfetch
+WorkingDirectory=/opt/xfetch
+
+# Defaults; override in /etc/xfetch.env (EnvironmentFile, optional).
+# Binds all interfaces by default. NOTE: /api/proxy is an open relay — put this
+# behind auth/a reverse proxy, or set XFETCH_HOST=127.0.0.1, before exposing it.
+Environment=XFETCH_HOST=0.0.0.0
+Environment=XFETCH_PORT=8000
+Environment=XFETCH_DB=/var/lib/xfetch/xfetch.db
+Environment=PATH=/usr/local/bin:/usr/bin:/bin
+EnvironmentFile=-/etc/xfetch.env
+
+ExecStart=/opt/xfetch/.venv/bin/uvicorn app.main:app \
+    --host ${XFETCH_HOST} --port ${XFETCH_PORT} --proxy-headers
+
+Restart=on-failure
+RestartSec=3
+
+# --- Sandboxing / hardening ---
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=false
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+CapabilityBoundingSet=
+AmbientCapabilities=
+# Allow yt-dlp/JS runtime to write a cache under the unit's runtime dir, and a
+# persistent /var/lib/xfetch for the SQLite recommender DB ($XFETCH_DB).
+RuntimeDirectory=xfetch
+StateDirectory=xfetch
+Environment=HOME=/run/xfetch
+Environment=DENO_DIR=/run/xfetch/deno
+Environment=XDG_CACHE_HOME=/run/xfetch
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+
+[Install]
+WantedBy=multi-user.target

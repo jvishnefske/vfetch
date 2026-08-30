@@ -1,0 +1,663 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>xfetch · stream resolver</title>
+  <!-- defer: the shell paints before this loads, so nothing blocks first render -->
+  <script defer src="https://cdn.jsdelivr.net/npm/hls.js@1.5/dist/hls.min.js"></script>
+  <!-- rxjs.webSocket() backs the remote-tracing channel, see the bottom script -->
+  <script defer src="https://cdn.jsdelivr.net/npm/rxjs@7.8.1/dist/bundles/rxjs.umd.min.js"></script>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Archivo+Expanded:wght@700;800&family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500&display=swap" rel="stylesheet" />
+  <style>
+    :root{
+      color-scheme:dark;
+      --bg:#0b0f10; --bg-2:#080c0d; --panel:#10181b; --panel-2:#0d1417;
+      --line:#1f2c30; --line-2:#2a3a3f;
+      --fg:#e9efea; --muted:#73867d; --faint:#475650;
+      --accent:#f6b63f; --accent-ink:#16130a; --accent-dim:#6f561f;
+      --err:#ff6b5e;
+      --mono:"IBM Plex Mono",ui-monospace,SFMono-Regular,Menlo,monospace;
+      --sans:"IBM Plex Sans",system-ui,sans-serif;
+      --disp:"Archivo Expanded","Archivo",system-ui,sans-serif;
+    }
+    *{box-sizing:border-box}
+    html,body{margin:0}
+    body{
+      background:var(--bg); color:var(--fg);
+      font:15px/1.6 var(--sans);
+      -webkit-font-smoothing:antialiased;
+    }
+    a{color:inherit}
+
+    /* ---- top rail (instrument header) -------------------------------------- */
+    .rail{
+      position:sticky; top:0; z-index:5;
+      display:flex; align-items:center; gap:14px;
+      padding:14px 20px;
+      background:color-mix(in srgb, var(--bg) 86%, transparent);
+      backdrop-filter:blur(8px);
+      border-bottom:1px solid var(--line);
+    }
+    .brand{
+      font-family:var(--disp); font-weight:800; font-size:19px;
+      letter-spacing:-.01em; line-height:1;
+    }
+    .brand-sub{
+      font-family:var(--mono); font-weight:500; font-size:10.5px;
+      letter-spacing:.22em; text-transform:uppercase; color:var(--muted);
+      margin-left:10px;
+    }
+    .chip{
+      margin-left:auto;
+      font-family:var(--mono); font-size:11.5px; letter-spacing:.02em;
+      padding:5px 10px; border-radius:999px; border:1px solid var(--line-2);
+      color:var(--muted); white-space:nowrap;
+    }
+    .chip.ok{color:var(--fg)} .chip.ok b{color:var(--accent);font-weight:600}
+    .chip.bad{color:var(--err); border-color:color-mix(in srgb,var(--err) 40%,var(--line))}
+
+    /* ---- shell ------------------------------------------------------------- */
+    main{max-width:920px; margin:0 auto; padding:40px 20px 72px; animation:fade .6s ease both}
+    .lede{
+      font-family:var(--disp); font-weight:800;
+      font-size:clamp(26px,4.6vw,40px); line-height:1.04; letter-spacing:-.02em;
+      margin:6px 0 12px; max-width:16ch;
+    }
+    .lede em{font-style:normal; color:var(--accent)}
+    .dek{margin:0 0 30px; color:var(--muted); font-size:14.5px; max-width:54ch}
+
+    /* ---- command bar (the signature) --------------------------------------- */
+    .command{
+      position:relative; display:flex; align-items:center; gap:0;
+      background:var(--panel); border:1px solid var(--line-2);
+      border-radius:4px; padding:6px 6px 6px 14px;
+    }
+    .command:focus-within{border-color:var(--accent)}
+    .command .caret{
+      font-family:var(--mono); font-size:18px; color:var(--accent);
+      margin-right:10px; line-height:1; user-select:none;
+    }
+    #url{
+      flex:1; min-width:0; border:0; background:transparent; color:var(--fg);
+      font-family:var(--mono); font-size:14.5px; padding:11px 4px; outline:none;
+    }
+    #url::placeholder{color:var(--faint)}
+    #go{
+      flex:none; cursor:pointer; border:0; border-radius:3px;
+      background:var(--accent); color:var(--accent-ink);
+      font-family:var(--mono); font-weight:600; font-size:13px;
+      letter-spacing:.04em; text-transform:uppercase; padding:11px 18px;
+    }
+    #go:hover{filter:brightness(1.08)}
+    #go:disabled{opacity:.45; cursor:default}
+    /* crop-mark corner ticks — instrument bezel, used ONLY here */
+    .tick{position:absolute; width:9px; height:9px; pointer-events:none}
+    .tick::before,.tick::after{content:"";position:absolute;background:var(--accent)}
+    .tick::before{width:9px;height:1.5px} .tick::after{width:1.5px;height:9px}
+    .tl{top:-3px;left:-3px}    .tr{top:-3px;right:-3px}
+    .bl{bottom:-3px;left:-3px} .br{bottom:-3px;right:-3px}
+    .tr::before,.br::before{right:0} .tr::after,.br::after{right:0}
+    .bl::before,.br::before{bottom:0} .bl::after,.br::after{bottom:0}
+
+    /* live extraction status line — yt-dlp's own bracket vernacular */
+    .status{
+      font-family:var(--mono); font-size:12.5px; letter-spacing:.01em;
+      margin:12px 2px 0; color:var(--muted); min-height:1.2em;
+    }
+    .status .bk{color:var(--faint)}
+    .status .st{color:var(--muted)}
+    .status .ms{color:var(--muted)}
+    .status.s-ready .st{color:var(--accent)}
+    .status.s-run   .st{color:var(--accent); animation:blink 1s steps(1) infinite}
+    .status.s-run   .ms{color:var(--fg)}
+    .status.s-ok    .st{color:#7fd6a6} .status.s-ok .ms{color:var(--fg)}
+    .status.s-fail  .st{color:var(--err)} .status.s-fail .ms{color:var(--fg)}
+
+    /* ---- channels ---------------------------------------------------------- */
+    .panel{margin-top:30px; animation:rise .5s cubic-bezier(.2,.7,.2,1) both}
+    .eyebrow{
+      display:flex; align-items:center; gap:10px; margin-bottom:11px;
+      font-family:var(--mono); font-weight:600; font-size:11px;
+      letter-spacing:.2em; text-transform:uppercase; color:var(--muted);
+    }
+    .dot{
+      width:7px; height:7px; border-radius:50%;
+      border:1.5px solid var(--faint); background:transparent; flex:none;
+    }
+    .dot.on{background:var(--accent); border-color:var(--accent);
+            box-shadow:0 0 0 3px color-mix(in srgb,var(--accent) 22%,transparent)}
+    .cnt{
+      font-family:var(--mono); font-weight:500; font-size:10.5px;
+      letter-spacing:.06em; color:var(--accent); text-transform:none;
+    }
+    .cnt:empty{display:none}
+    /* A header that's now just a count collapses entirely when that count is
+       empty, so loading/empty sections don't leave a stray gap. */
+    .eyebrow:has(> .cnt:only-child:empty){display:none}
+    .mini{
+      margin-left:auto; cursor:pointer;
+      background:transparent; color:var(--muted);
+      border:1px solid var(--line-2); border-radius:3px;
+      font-family:var(--mono); font-size:11px; letter-spacing:.04em;
+      text-transform:lowercase; padding:5px 11px;
+    }
+    .mini:hover{color:var(--accent); border-color:var(--accent-dim)}
+    .mini:disabled{opacity:.45; cursor:default}
+
+    .card{
+      background:var(--panel); border:1px solid var(--line);
+      border-radius:5px; padding:16px;
+    }
+    .note{font-family:var(--mono); font-size:12px; color:var(--muted); margin:8px 2px 0; min-height:0}
+    .skeleton{font-family:var(--mono); font-size:12.5px; color:var(--muted)}
+    .err{color:var(--err)}
+
+    /* player */
+    video{width:100%; border-radius:5px; background:#000; aspect-ratio:16/9; display:none}
+    select{
+      width:100%; margin-top:10px; padding:10px 12px; border-radius:4px;
+      border:1px solid var(--line-2); background:var(--panel); color:var(--fg);
+      font-family:var(--mono); font-size:12.5px; display:none;
+    }
+
+    /* extraction metadata */
+    .meta-head{display:flex; gap:16px}
+    .meta-head img{width:132px; border-radius:4px; align-self:flex-start; border:1px solid var(--line)}
+    .meta-head h3{margin:0 0 6px; font-family:var(--disp); font-weight:700; font-size:17px; letter-spacing:-.01em; line-height:1.2}
+    .meta-head p{margin:0; color:var(--muted); font-family:var(--mono); font-size:12px}
+    table{width:100%; border-collapse:collapse; margin-top:16px; font-family:var(--mono); font-size:12px}
+    th,td{text-align:left; padding:6px 10px; border-bottom:1px solid var(--line)}
+    th{color:var(--faint); font-weight:600; letter-spacing:.08em; text-transform:uppercase; font-size:10.5px}
+    td:first-child{color:var(--fg)} td{color:var(--muted)}
+    tr:last-child td{border-bottom:0}
+    details{margin-top:14px}
+    summary{cursor:pointer; list-style:none}
+    summary::-webkit-details-marker{display:none}
+    summary::before{content:"› "; color:var(--accent)}
+    details[open] summary::before{content:"⌄ "}
+    pre{
+      overflow:auto; background:var(--bg-2); border:1px solid var(--line);
+      border-radius:4px; padding:14px; margin-top:10px;
+      font-family:var(--mono); font-size:11.5px; line-height:1.55; max-height:300px; color:var(--muted);
+    }
+
+    /* video lists (linked + recommendations) */
+    ul{list-style:none; margin:0; padding:0}
+    li{padding:0; border-top:1px solid var(--line)}
+    li:first-child{border-top:0}
+    .vid{display:flex; gap:12px; align-items:flex-start; padding:9px 0; text-decoration:none; color:var(--fg)}
+    .vid img{width:84px; height:48px; object-fit:cover; border-radius:3px; background:#000; flex:none; border:1px solid var(--line)}
+    .vid .t{flex:1; min-width:0; display:flex; flex-direction:column; gap:3px}
+    .vid .tt{overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:14px}
+    .vid .d{overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-family:var(--sans); font-size:11.5px; color:var(--faint)}
+    a.vid:hover .tt{color:var(--accent)}
+
+    /* link-layout chooser: three versions shown together */
+    .lv{margin-top:16px}
+    .lv h4{margin:0 0 8px; font-family:var(--mono); font-size:10.5px; color:var(--faint);
+           letter-spacing:.1em; text-transform:uppercase; font-weight:600}
+    .dim{opacity:.5}
+    /* version 2 — gallery */
+    .gal{display:grid; grid-template-columns:repeat(auto-fill,minmax(150px,1fr)); gap:14px}
+    .gcard{display:flex; flex-direction:column; gap:6px; text-decoration:none; color:var(--fg)}
+    .gcard img{width:100%; aspect-ratio:16/9; object-fit:cover; border-radius:4px;
+           background:var(--bg-2); border:1px solid var(--line)}
+    .gcard .gt{font-size:12.5px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
+    a.gcard:hover .gt{color:var(--accent)}
+    /* version 3 — compact */
+    .cmprow{display:flex; gap:8px; align-items:center; padding:5px 0; text-decoration:none;
+            color:var(--fg); font-family:var(--mono); font-size:12px; border-top:1px solid var(--line)}
+    .cmprow .ci{width:34px; height:20px; object-fit:cover; border-radius:2px; flex:none;
+            border:1px solid var(--line); background:var(--bg-2)}
+    .cmprow i.ci{border-style:dashed; opacity:.4}
+    .cmprow .cl{flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
+    a.cmprow:hover .cl{color:var(--accent)}
+    .tag{font-family:var(--mono); color:var(--faint); font-size:11px; letter-spacing:.02em; flex:none}
+
+    .hidden{display:none}
+
+    /* focus + reduced motion (quality floor) */
+    :focus-visible{outline:2px solid var(--accent); outline-offset:2px; border-radius:3px}
+    #url:focus-visible{outline:none}
+    @keyframes fade{from{opacity:0}to{opacity:1}}
+    @keyframes rise{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+    @keyframes blink{50%{opacity:.35}}
+    @media (prefers-reduced-motion:reduce){
+      *{animation:none!important; transition:none!important}
+    }
+    @media (max-width:560px){
+      .meta-head{flex-direction:column}
+      .meta-head img{width:100%}
+      .rail{padding:12px 16px}
+      main{padding:28px 16px 56px}
+    }
+  </style>
+</head>
+<body>
+<header class="rail">
+  <span class="brand">xfetch<span class="brand-sub">stream resolver</span></span>
+  {% if js_runtime %}
+  <span class="chip ok" title="{{ js_runtime }}">JS&nbsp;runtime · <b>{{ js_runtime.split(' ')[0] }}</b>&nbsp;✓</span>
+  {% else %}
+  <span class="chip bad">no JS runtime — install Deno or Node</span>
+  {% endif %}
+  <span id="trace-chip" class="chip" title="Pass this id to POST /api/trace/{id}/start to remotely trace this tab">trace · <b id="trace-id"></b></span>
+</header>
+
+<main>
+  <h1 class="lede">Turn a media page into a <em>playable stream</em>.</h1>
+  <p class="dek">Paste any video URL — xfetch resolves it with yt-dlp and plays it here, same-origin, with the extraction laid bare.</p>
+
+  <!-- THE SIGNATURE: a command bar wearing instrument crop-marks, narrated by a
+       status line in yt-dlp's own [tag] log vernacular. -->
+  <form id="form" class="command">
+    <span class="tick tl"></span><span class="tick tr"></span>
+    <span class="tick bl"></span><span class="tick br"></span>
+    <span class="caret" aria-hidden="true">›</span>
+    <input id="url" type="text" inputmode="url" autocapitalize="off" autocorrect="off"
+           spellcheck="false" aria-label="Media page URL"
+           placeholder="youtube.com/watch?v=…   (https:// optional)" required autofocus />
+    <button id="go" type="submit">Resolve</button>
+  </form>
+  <div id="status" class="status s-ready"></div>
+
+  <!-- Each channel paints its skeleton instantly and fills independently. -->
+  <section id="video-sec" class="panel hidden">
+    <div class="eyebrow"><i class="dot" id="stream-dot"></i><i class="cnt" id="stream-state"></i></div>
+    <video id="player" controls playsinline></video>
+    <select id="quality" title="Quality"></select>
+    <div id="video-status" class="note"></div>
+  </section>
+
+  <section id="meta-sec" class="panel hidden">
+    <div id="meta" class="card"><span class="skeleton">awaiting yt-dlp…</span></div>
+  </section>
+
+  <section id="linked-sec" class="panel hidden">
+    <div class="eyebrow"><i class="cnt" id="linked-cnt"></i></div>
+    <div id="linked" class="card"></div>
+  </section>
+
+  <section id="recs-sec" class="panel hidden">
+    <div class="eyebrow"><i class="cnt" id="recs-cnt"></i></div>
+    <div id="recs" class="card"><span class="skeleton">loading neighbours…</span></div>
+  </section>
+
+  <section id="pagelinks-sec" class="panel hidden">
+    <div class="eyebrow"><i class="cnt" id="pagelinks-cnt"></i></div>
+    <div id="pagelinks" class="card"><span class="skeleton">scraping page links…</span></div>
+  </section>
+</main>
+
+<script>
+const $ = (id) => document.getElementById(id);
+// Default a missing scheme to https:// so the user needn't type it.
+const normalizeUrl = (u) => !u ? u : (/^[a-z][a-z0-9+.-]*:\/\//i.test(u) ? u : "https://" + u);
+const player = $("player");
+let hls = null;
+
+// --- remote tracing: server can flip this tab into "tracing" mode at any time
+// via POST /api/trace/{TRACE_ID}/start (or the tab can self-start via ?trace=1)
+// without a reload. This early block only sets up plain-JS state and console
+// capture — it must not touch `rxjs` itself (loaded with `defer`, so it isn't
+// guaranteed to exist yet). The rxjs-backed transport, and everything else in
+// the app, is wired up in initApp() once DOMContentLoaded fires (by spec,
+// after every deferred script has finished running).
+const TRACE_ID = (() => {
+  let id = localStorage.getItem("xfetch_trace_id");
+  if(!id){
+    id = (window.crypto && crypto.randomUUID) ? crypto.randomUUID()
+       : "id-"+Math.random().toString(36).slice(2)+Date.now().toString(36);
+    localStorage.setItem("xfetch_trace_id", id);
+  }
+  return id;
+})();
+$("trace-id").textContent = TRACE_ID.slice(0, 8);
+let tracing = new URLSearchParams(location.search).get("trace") === "1";
+let traceEvents$ = null;  // Subject; set once rxjs has loaded (see initApp)
+function traceEvent(evt){ if(tracing && traceEvents$) traceEvents$.next({...evt, ts: Date.now()}); }
+
+["log","warn","error","info"].forEach(level=>{
+  const orig = console[level].bind(console);
+  console[level] = (...args)=>{
+    orig(...args);
+    traceEvent({type:"console", level, message: args.map(a=>{
+      if(typeof a === "string") return a;
+      try { return JSON.stringify(a); } catch(e) { return String(a); }
+    }).join(" ")});
+  };
+});
+window.addEventListener("error", (e)=>{
+  traceEvent({type:"console", level:"error", message:`${e.message} (${e.filename}:${e.lineno})`});
+});
+window.addEventListener("unhandledrejection", (e)=>{
+  traceEvent({type:"console", level:"error", message:`unhandled rejection: ${e.reason}`});
+});
+
+function esc(s){const d=document.createElement("div");d.textContent=s==null?"":s;return d.innerHTML;}
+function fmtDur(s){if(!s)return "";const m=Math.floor(s/60),x=Math.floor(s%60);return `${m}:${String(x).padStart(2,"0")}`;}
+function fmtDurShort(s){ if(!s) return ""; const m=Math.floor(s/60),x=Math.floor(s%60); return `${m}:${String(x).padStart(2,"0")}`; }
+
+function teardown(){ if(hls){hls.destroy();hls=null;} player.removeAttribute("src"); player.load();
+  $("stream-dot").classList.remove("on"); $("stream-state").textContent=""; }
+
+function play(src){
+  teardown();
+  player.style.display="block";
+  $("video-status").textContent="loading "+src.label+" …";
+  $("stream-state").textContent=`${src.protocol.toUpperCase()}${src.height?" · "+src.height+"p":""}`;
+  $("stream-dot").classList.add("on");
+  if(src.protocol==="hls"){
+    if(player.canPlayType("application/vnd.apple.mpegurl")){ player.src=src.play_url; }
+    else if(window.Hls && Hls.isSupported()){
+      hls=new Hls({enableWorker:true});
+      hls.loadSource(src.play_url); hls.attachMedia(player);
+      hls.on(Hls.Events.ERROR,(_,d)=>{if(d.fatal)$("video-status").textContent="";});
+    } else { $("video-status").textContent=""; return; }
+  } else { player.src=src.play_url; }
+  player.play().catch(()=>{});
+  $("video-status").textContent="";
+}
+
+// --- region renderers (each independent, failures isolated; pure DOM writes —
+// wiring their data in reactively happens in initApp) ------------------------
+
+function renderVideo(data){
+  $("video-sec").classList.remove("hidden");
+  window._sources=data.sources;
+  const sel=$("quality"); sel.innerHTML="";
+  data.sources.forEach((s,i)=>{const o=document.createElement("option");o.value=i;o.textContent=s.label;sel.appendChild(o);});
+  sel.style.display=data.sources.length>1?"block":"none";
+  play(data.sources[0]);
+}
+
+function renderMeta(data){
+  $("meta-sec").classList.remove("hidden");
+  const fmtRows=data.sources.map(s=>`<tr><td>${esc(s.label)}</td><td>${esc(s.protocol)}</td><td>${esc(s.ext||"")}</td><td>${s.height?s.height+"p":""}</td></tr>`).join("");
+  $("meta").innerHTML=`
+    <div class="meta-head">
+      ${data.thumbnail?`<img src="${esc(data.thumbnail)}" alt="">`:""}
+      <div>
+        <h3>${esc(data.title||"(untitled)")}</h3>
+        <p>${[esc(data.uploader),esc(data.extractor),fmtDur(data.duration)].filter(Boolean).join(" · ")}</p>
+        ${data.description?`<p style="margin-top:10px;color:var(--fg);font-family:var(--sans);font-size:13.5px;line-height:1.55">${esc(data.description.slice(0,300))}${data.description.length>300?"…":""}</p>`:""}
+      </div>
+    </div>
+    <table><thead><tr><th>format</th><th>protocol</th><th>ext</th><th>res</th></tr></thead><tbody>${fmtRows}</tbody></table>
+    <details><summary class="tag">raw yt-dlp JSON</summary><pre>${esc(JSON.stringify(data,null,2))}</pre></details>`;
+}
+
+// Shared list item: optional thumbnail, a clickable title that loads the URL,
+// and a muted description line when one is available. Clicks are handled by
+// one delegated document-level listener in initApp — no per-render wiring.
+function vidItem(v, prefix, suffix){
+  const thumb = v.thumbnail ? `<img src="${esc(v.thumbnail)}" alt="" loading="lazy">` : "";
+  const desc = v.description ? `<span class="d">${esc(v.description.slice(0,140))}</span>` : "";
+  return `<li><a class="vid" href="#" data-url="${esc(v.url)}">${thumb}`
+       + `<span class="t"><span class="tt">${prefix||""}${esc(v.title||v.url)}</span>${desc}</span>`
+       + `<span class="tag">${suffix||""}</span></a></li>`;
+}
+
+function renderLinked(data){
+  const sec=$("linked-sec"), box=$("linked");
+  const items=data.related||[];
+  if(!items.length){ sec.classList.add("hidden"); $("linked-cnt").textContent=""; return; }
+  sec.classList.remove("hidden");
+  $("linked-cnt").textContent=items.length;
+  const p=data.playlist;
+  const head = !p ? ""
+    : p.kind==="channel"
+      ? `<p class="tag" style="margin:0 0 10px">${esc(p.title||"")}</p>`
+      : `<p class="tag" style="margin:0 0 10px">Playlist · ${esc(p.title||"")} (${p.count})</p>`;
+  box.innerHTML = head + "<ul>" + items.map(v=>
+    vidItem(v, "", esc(fmtDurShort(v.duration)))
+  ).join("") + "</ul>";
+}
+
+// --- page links: three layout versions (rows is the one actually shown) -----
+// Generic anchor words that are useless as labels — fall back to the URL slug.
+const _GENERIC = new Set(["video","videos","comment","comments","permalink",
+  "link","more","read more","source","share","reddit","watch","play","open"]);
+function deslug(u){
+  try{
+    const p = new URL(u);
+    let s = p.pathname.split("/").filter(Boolean).pop() || p.hostname;
+    s = decodeURIComponent(s).replace(/\.[a-z0-9]{1,5}$/i,"").replace(/[-_+]+/g," ").trim();
+    return s || p.hostname;
+  }catch(e){ return u; }
+}
+function linkLabel(l){
+  if(l.title) return l.title;
+  const t = (l.text||"").trim();
+  if(t && !_GENERIC.has(t.toLowerCase())) return t;
+  return l.url ? deslug(l.url) : (t || "(link)");
+}
+const linkThumb = (l) => l.thumbnail || l.image || "";
+
+// Wrap an item: clickable <a> when navigable, dimmed <span> otherwise.
+function linkWrap(l, inner, cls){
+  return l.url
+    ? `<li><a class="${cls}" href="#" data-url="${esc(l.url)}">${inner}</a></li>`
+    : `<li><span class="${cls} dim">${inner}</span></li>`;
+}
+
+function linksRows(items){
+  return "<ul>"+items.map(l=>{
+    const t=linkThumb(l), thumb=t?`<img src="${esc(t)}" alt="" loading="lazy">`:"";
+    const d=l.description?`<span class="d">${esc(l.description.slice(0,140))}</span>`:"";
+    return linkWrap(l, `${thumb}<span class="t"><span class="tt">${esc(linkLabel(l))}</span>${d}</span>`, "vid");
+  }).join("")+"</ul>";
+}
+function linksGallery(items){
+  // Visual grid: only links that actually have an image (no empty boxes).
+  const vis=items.filter(l=>linkThumb(l));
+  if(!vis.length) return `<p class="tag">No links with images here — try the rows or compact view.</p>`;
+  return `<div class="gal">`+vis.map(l=>
+    linkWrap(l, `<img src="${esc(linkThumb(l))}" alt="" loading="lazy"><span class="gt">${esc(linkLabel(l))}</span>`, "gcard")
+  ).join("")+`</div>`;
+}
+function linksCompact(items){
+  return `<ul>`+items.map(l=>{
+    const t=linkThumb(l);
+    const ic=t?`<img class="ci" src="${esc(t)}" alt="" loading="lazy">`:`<i class="ci ph"></i>`;
+    return linkWrap(l, `${ic}<span class="cl">${esc(linkLabel(l))}</span>`, "cmprow");
+  }).join("")+`</ul>`;
+}
+
+// --- reactive core -----------------------------------------------------------
+// Everything below depends on rxjs, so it runs once DOMContentLoaded fires —
+// deferred scripts (hls.js, rxjs) are guaranteed to have finished by then.
+// Data flow: user input (submit / link click / ?url= deep link) -> currentUrl$
+// (a BehaviorSubject). Each of resolve/links/discover independently
+// switchMaps off currentUrl$ through rxjs.fetch.fromFetch, so submitting a new
+// URL genuinely *aborts* whatever the previous URL's requests were doing
+// (fromFetch ties an AbortController to unsubscription) instead of merely
+// racing them, like the old Promise-based version did.
+
+function initApp(){
+  // -- status line: a BehaviorSubject so the DOM render and the trace mirror
+  // are one subscriber, and any future consumer can just subscribe to it.
+  const status$ = new rxjs.BehaviorSubject({state:"ready", msg:"paste a media link — https:// optional"});
+  function setStatus(state, msg){ status$.next({state, msg}); }
+  status$.subscribe(({state, msg})=>{
+    const map={ready:"s-ready",resolve:"s-run",ok:"s-ok",fail:"s-fail"};
+    const el=$("status");
+    el.className="status "+(map[state]||"s-ready");
+    el.innerHTML=`<span class="bk">[</span><span class="st">${esc(state)}</span><span class="bk">]</span> <span class="ms">${esc(msg)}</span>`;
+    traceEvent({type:"event", name:"status", state, msg});
+  });
+
+  // -- tracing on/off, mirrored into a BehaviorSubject purely to drive the
+  // trace chip's UI; `tracing` (plain bool, set above) stays the source of
+  // truth traceEvent() reads, since that function must work before rxjs loads.
+  const tracingOn$ = new rxjs.BehaviorSubject(tracing);
+  tracingOn$.subscribe(on => $("trace-chip").classList.toggle("ok", on));
+
+  // -- fetch wrapper: never throws downstream — HTTP/network/parse failures
+  // all collapse to {ok:false}, so callers branch on `ok` instead of catching.
+  function fetchJson$(url){
+    return rxjs.fetch.fromFetch(url).pipe(
+      rxjs.operators.switchMap(res => rxjs.from(res.json()).pipe(
+        rxjs.operators.map(body => ({ok: res.ok, status: res.status, body})),
+      )),
+      rxjs.operators.catchError(err => rxjs.of({
+        ok: false, status: 0, body: {detail: (err && err.message) || String(err)},
+      })),
+    );
+  }
+
+  // -- one source of truth for "the URL we're currently loading".
+  const currentUrl$ = new rxjs.BehaviorSubject(null);
+
+  const submit$ = rxjs.fromEvent($("form"), "submit").pipe(
+    rxjs.operators.tap(e => e.preventDefault()),
+    rxjs.operators.map(() => normalizeUrl($("url").value.trim())),
+    rxjs.operators.filter(Boolean),
+  );
+  // Delegated at the document level (not per-render) so newly-injected list
+  // items work with zero extra wiring — this replaces the old wireVidLinks().
+  const linkClick$ = rxjs.fromEvent(document, "click").pipe(
+    rxjs.operators.filter(e => e.target.closest("a[data-url]")),
+    rxjs.operators.tap(e => e.preventDefault()),
+    rxjs.operators.map(e => e.target.closest("a[data-url]").dataset.url),
+  );
+  const deepLink$ = (() => {
+    const initial = new URLSearchParams(location.search).get("url");
+    return initial ? rxjs.of(normalizeUrl(initial)) : rxjs.EMPTY;
+  })();
+  rxjs.merge(submit$, linkClick$, deepLink$).pipe(
+    rxjs.operators.tap(url => { $("url").value = url; }),
+  ).subscribe(url => currentUrl$.next(url));
+
+  // Reveal skeletons and reset per-load UI the instant a URL is accepted —
+  // independent of how long resolve/links/discover each take to answer.
+  let pendingGate = 0;
+  currentUrl$.pipe(rxjs.operators.filter(url => url != null)).subscribe(() => {
+    pendingGate = 2;  // resolve + links gate the button; discover runs free
+    $("go").disabled = true;
+    setStatus("resolve","querying yt-dlp…");
+    ["video-sec","meta-sec","recs-sec","linked-sec","pagelinks-sec"].forEach(id=>$(id).classList.remove("hidden"));
+    $("video-status").textContent="resolving…";
+    $("meta").innerHTML='<span class="skeleton">awaiting yt-dlp…</span>';
+    $("recs").innerHTML='<span class="skeleton">loading neighbours…</span>';
+    $("linked").innerHTML='<span class="skeleton">listing linked videos…</span>';
+    $("pagelinks").innerHTML='<span class="skeleton">scraping page links…</span>';
+    ["linked-cnt","recs-cnt","pagelinks-cnt"].forEach(id=>$(id).textContent="");
+    teardown(); player.style.display="none";
+  });
+  function settleGate(){ if(--pendingGate <= 0) $("go").disabled=false; }
+
+  // share(): resolveResult$ has three consumers below (render, recs, gate) —
+  // share() runs one fetch per URL instead of one per consumer.
+  const resolveResult$ = currentUrl$.pipe(
+    rxjs.operators.filter(url => url != null),
+    rxjs.operators.switchMap(url => fetchJson$("/api/resolve?url="+encodeURIComponent(url)).pipe(
+      rxjs.operators.map(r => ({url, ...r})),
+    )),
+    rxjs.operators.share(),
+  );
+  const linksResult$ = currentUrl$.pipe(
+    rxjs.operators.filter(url => url != null),
+    rxjs.operators.switchMap(url => fetchJson$("/api/links?url="+encodeURIComponent(url)).pipe(
+      rxjs.operators.map(r => ({url, ...r})),
+    )),
+    rxjs.operators.share(),
+  );
+  const discoverResult$ = currentUrl$.pipe(
+    rxjs.operators.filter(url => url != null),
+    rxjs.operators.switchMap(url => fetchJson$("/api/discover?url="+encodeURIComponent(url)+"&same_domain=true").pipe(
+      rxjs.operators.map(r => ({url, ...r})),
+    )),
+  );
+  // Best-effort recommendations, refined by the resolved title once it's in —
+  // works even when resolve failed (title/description just come back blank),
+  // so an unrecognised page still gets same-domain neighbours.
+  const recsResult$ = resolveResult$.pipe(
+    rxjs.operators.switchMap(({url, ok, body}) => {
+      const q = new URLSearchParams({
+        url, title: ok ? (body.title||"") : "", description: ok ? (body.description||"") : "", n: "8",
+      });
+      return fetchJson$("/api/recommend?"+q);
+    }),
+  );
+
+  resolveResult$.subscribe(({ok, body})=>{
+    if(ok){
+      window._data = body;  // current page (title/desc feed recs above)
+      const top = body.sources[0]||{};
+      setStatus("ok",`${body.title||"stream"} · ${body.sources.length} stream${body.sources.length===1?"":"s"} · ${(top.protocol||"").toUpperCase()}`);
+      renderMeta(body);   // yt-dlp response
+      renderVideo(body);  // player
+    } else {
+      // No red failure state — go blank and lean on the other channels.
+      setStatus("ready","no playable stream here — showing links & neighbours");
+      $("video-sec").classList.add("hidden");
+      $("meta-sec").classList.add("hidden");
+    }
+    settleGate();
+  });
+
+  linksResult$.subscribe(({ok, body})=>{
+    if(ok) renderLinked(body);          // shows the section, or hides it if empty
+    else $("linked-sec").classList.add("hidden");
+    settleGate();
+  });
+
+  recsResult$.subscribe(({ok, body})=>{
+    if(!ok){ $("recs-sec").classList.add("hidden"); return; }
+    $("recs-cnt").textContent = body.recommendations.length || "";
+    if(!body.recommendations.length){
+      $("recs").innerHTML = `<span class="skeleton">Nothing indexed from this domain yet — links are being scanned automatically.</span>`;
+      return;
+    }
+    $("recs").innerHTML = "<ul>"+body.recommendations.map(r=>
+      vidItem(r, (r.source==="fts"?"≈ ":"◇ "), esc(r.source))
+    ).join("")+"</ul>";
+  });
+
+  discoverResult$.subscribe(({ok, body})=>{
+    if(!ok){ $("pagelinks-sec").classList.add("hidden"); return; }
+    const items=(body.links||[]).slice(0,200);
+    $("pagelinks-cnt").textContent = body.links_found || "";
+    if(!items.length){ $("pagelinks").innerHTML='<span class="skeleton">no links found on this page.</span>'; return; }
+    const note=`<p class="tag" style="margin:0 0 4px">${body.links_found} same-domain links · ${body.cached_count} already indexed · click any to resolve</p>`;
+    $("pagelinks").innerHTML = note + linksRows(items);
+  });
+
+  rxjs.fromEvent($("quality"), "change").pipe(
+    rxjs.operators.map(e => window._sources[e.target.value]),
+  ).subscribe(src => play(src));
+
+  // -- remote tracing transport: connects on load and stays subscribed for
+  // the tab's whole life, so a start/stop push always lands.
+  traceEvents$ = new rxjs.Subject();
+  const traceSocket = rxjs.webSocket.webSocket(
+    (location.protocol==="https:"?"wss://":"ws://")+location.host+"/ws/trace/"+TRACE_ID
+  );
+  // Batch bursty events (console spam, rapid status changes) into one frame
+  // instead of one WS message per event.
+  traceEvents$.pipe(
+    rxjs.operators.bufferTime(250),
+    rxjs.operators.filter(batch=>batch.length>0),
+  ).subscribe(batch=>traceSocket.next({type:"batch", events:batch}));
+  // retry re-opens the underlying socket if the server drops it.
+  traceSocket.pipe(rxjs.operators.retry({delay:3000})).subscribe({
+    next: (msg)=>{
+      if(!msg || msg.type!=="control") return;
+      if(msg.command==="start"){ tracing=true; tracingOn$.next(true); traceEvent({type:"event",name:"trace",msg:"tracing started (remote)"}); }
+      else if(msg.command==="stop"){ traceEvent({type:"event",name:"trace",msg:"tracing stopped (remote)"}); tracing=false; tracingOn$.next(false); }
+    },
+    error: ()=>{},  // retry above keeps reconnecting
+  });
+  if(tracing) traceEvent({type:"event", name:"trace", msg:"tracing started (?trace=1)"});
+}
+
+// rxjs loads with `defer`, so wait for it before wiring the app up — by spec,
+// deferred scripts finish running before DOMContentLoaded fires.
+document.addEventListener("DOMContentLoaded", initApp);
+</script>
+</body>
+</html>

@@ -1,0 +1,2 @@
+# Runtime deps + dev tools (pytest), defined in pyproject.toml's [dev] extra.
+-e .[dev]

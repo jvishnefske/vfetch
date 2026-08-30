@@ -1,0 +1,17 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Nix
+result
+result-*
+
+# Runtime data
+*.db
+*.db-journal
+*.db-wal
+
+# Editor / OS
+.DS_Store

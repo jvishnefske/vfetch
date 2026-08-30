@@ -1,0 +1,3 @@
+# Canonical dependency definitions live in pyproject.toml.
+# This installs the project (with its runtime deps) for the pip/venv deploy path.
+-e .
