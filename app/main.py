@@ -154,7 +154,7 @@ async def health() -> dict:
 @app.get("/api/resolve", response_model=models.ResolveResponse)
 async def resolve(url: str = Query(..., description="Page URL to resolve")) -> dict:
     url = _normalize_url(url)
-    if not urlparse(url).scheme in ("http", "https"):
+    if urlparse(url).scheme not in ("http", "https"):
         raise HTTPException(status_code=400, detail="url must be http(s)")
     try:
         data = await ytdlp_service.resolve(url)
